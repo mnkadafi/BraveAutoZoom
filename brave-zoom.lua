@@ -11,13 +11,15 @@ local ZOOM_EXTERNAL = "125%"
 
 local debounceTimer = nil
 local braveTask     = nil
-local busy          = false
 local lastApplied   = nil
+
+-- Kunci bersama (GLOBAL) dengan darkreader-auto.lua
+braveLock = braveLock or false
 
 
 local function changeBraveZoom(targetZoom, onDone)
 
-    if busy then
+    if braveLock then
         return false
     end
 
@@ -61,10 +63,11 @@ tell application "Brave Browser"
 end tell
 ]]
 
-    busy = true
+    braveLock = true
 
-    braveTask = hs.task.new("/usr/bin/osascript", function(exitCode, stdout, stderr)
-        busy = false
+    local thisTask
+    thisTask = hs.task.new("/usr/bin/osascript", function(exitCode, stdout, stderr)
+        braveLock = false
         braveTask = nil
 
         local out = (stdout or ""):gsub("%s+$", "")
@@ -72,22 +75,25 @@ end tell
 
         local success = (out == "OK:" .. value)
 
-        if success then
-            hs.alert.show("Brave Zoom → " .. targetZoom)
-        else
-            hs.alert.show("Gagal mengubah zoom Brave")
-        end
+        print("Alert zoom dipanggil:", success)
+
+        hs.timer.doAfter(0.4, function()
+            local msg = success and ("Brave Zoom → " .. targetZoom)
+                                 or "Gagal mengubah zoom Brave"
+            hs.alert.show(msg, {}, hs.screen.primaryScreen(), 3)
+        end)
 
         if onDone then onDone(success) end
     end, { "-e", script })
 
-    braveTask:start()
+    braveTask = thisTask
+    thisTask:start()
 
-    -- Pengaman: matikan task kalau menggantung lebih dari 25 detik
+    -- Pengaman: matikan task INI kalau menggantung lebih dari 25 detik
     hs.timer.doAfter(25, function()
-        if braveTask and braveTask:isRunning() then
+        if braveTask == thisTask and thisTask:isRunning() then
             print("osascript timeout, dihentikan")
-            braveTask:terminate()
+            thisTask:terminate()
         end
     end)
 
@@ -126,14 +132,13 @@ local function applyZoomForCurrentScreen(force)
     end
 
     local started = changeBraveZoom(target, function(success)
-        -- lastApplied hanya diisi kalau BERHASIL, jadi kegagalan bisa diulang
         if success then lastApplied = target end
     end)
 
-    -- Kalau task sebelumnya masih jalan, coba lagi nanti
+    -- Kalau Brave sedang dipakai script lain, coba lagi sebentar lagi
     if not started then
         if debounceTimer then debounceTimer:stop() end
-        debounceTimer = hs.timer.doAfter(5, function()
+        debounceTimer = hs.timer.doAfter(1.5, function()
             applyZoomForCurrentScreen(force)
         end)
     end
@@ -144,7 +149,6 @@ end
 -- Trigger otomatis (semua GLOBAL agar tidak di-garbage-collect)
 -- =========================================================
 
--- 1) Monitor dicolok / dicabut / main display diganti
 local function screenChanged()
     if debounceTimer then debounceTimer:stop() end
     debounceTimer = hs.timer.doAfter(2, function()
@@ -155,7 +159,6 @@ end
 screenWatcher = hs.screen.watcher.new(screenChanged)
 screenWatcher:start()
 
--- 2) Mac bangun dari sleep
 wakeWatcher = hs.caffeinate.watcher.new(function(event)
     if event == hs.caffeinate.watcher.screensDidWake
         or event == hs.caffeinate.watcher.systemDidWake then
@@ -167,7 +170,6 @@ wakeWatcher = hs.caffeinate.watcher.new(function(event)
 end)
 wakeWatcher:start()
 
--- 3) Brave baru dibuka -> terapkan zoom
 appWatcher = hs.application.watcher.new(function(name, event)
     if name == BRAVE_NAME and event == hs.application.watcher.launched then
         hs.timer.doAfter(4, function()
@@ -177,7 +179,6 @@ appWatcher = hs.application.watcher.new(function(name, event)
 end)
 appWatcher:start()
 
--- 4) Saat Hammerspoon start / reload config
 hs.timer.doAfter(1, function()
     applyZoomForCurrentScreen(true)
 end)

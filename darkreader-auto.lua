@@ -9,9 +9,11 @@ local BRAVE_NAME = "Brave Browser"
 local DR_ID      = "eimadpbcbfnmbkopoojfekhnkhdbieeh"
 
 local drTask     = nil
-local drBusy     = false
 local drDebounce = nil
 local drLast     = nil
+
+-- Kunci bersama (GLOBAL) dengan brave-zoom.lua
+braveLock = braveLock or false
 
 
 local function isBuiltin(screen)
@@ -25,7 +27,7 @@ end
 
 local function setDarkReader(enable, onDone)
 
-    if drBusy then
+    if braveLock then
         return false
     end
 
@@ -83,10 +85,11 @@ tell application "Brave Browser"
 end tell
 ]]
 
-    drBusy = true
+    braveLock = true
 
-    drTask = hs.task.new("/usr/bin/osascript", function(exitCode, stdout, stderr)
-        drBusy = false
+    local thisTask
+    thisTask = hs.task.new("/usr/bin/osascript", function(exitCode, stdout, stderr)
+        braveLock = false
         drTask = nil
 
         local out = (stdout or ""):gsub("%s+$", "")
@@ -95,21 +98,22 @@ end tell
         local success = (out == "OK:" .. want)
 
         if success then
-            hs.alert.show("Dark Reader → " .. (enable and "ON" or "OFF"))
+            hs.alert.show("Dark Reader → " .. (enable and "ON" or "OFF"), 3)
         else
-            hs.alert.show("Gagal mengubah Dark Reader")
+            hs.alert.show("Gagal mengubah Dark Reader", 3)
         end
 
         if onDone then onDone(success) end
     end, { "-e", script })
 
-    drTask:start()
+    drTask = thisTask
+    thisTask:start()
 
-    -- Pengaman: matikan task kalau menggantung
+    -- Pengaman: matikan task INI kalau menggantung
     hs.timer.doAfter(25, function()
-        if drTask and drTask:isRunning() then
+        if drTask == thisTask and thisTask:isRunning() then
             print("Dark Reader: osascript timeout, dihentikan")
-            drTask:terminate()
+            thisTask:terminate()
         end
     end)
 
@@ -130,9 +134,10 @@ local function applyDarkReader(force)
         if success then drLast = enable end
     end)
 
+    -- Kalau Brave sedang dipakai script zoom, coba lagi sebentar lagi
     if not started then
         if drDebounce then drDebounce:stop() end
-        drDebounce = hs.timer.doAfter(5, function() applyDarkReader(force) end)
+        drDebounce = hs.timer.doAfter(1.5, function() applyDarkReader(force) end)
     end
 end
 
@@ -140,8 +145,7 @@ end
 -- Semua GLOBAL agar tidak di-garbage-collect
 drScreenWatcher = hs.screen.watcher.new(function()
     if drDebounce then drDebounce:stop() end
-    -- 6 detik: beri jeda supaya tidak bertabrakan dengan script zoom Brave
-    drDebounce = hs.timer.doAfter(6, applyDarkReader)
+    drDebounce = hs.timer.doAfter(2.5, applyDarkReader)
 end)
 drScreenWatcher:start()
 
@@ -149,18 +153,16 @@ drWakeWatcher = hs.caffeinate.watcher.new(function(event)
     if event == hs.caffeinate.watcher.screensDidWake
         or event == hs.caffeinate.watcher.systemDidWake then
         if drDebounce then drDebounce:stop() end
-        drDebounce = hs.timer.doAfter(8, applyDarkReader)
+        drDebounce = hs.timer.doAfter(5, applyDarkReader)
     end
 end)
 drWakeWatcher:start()
 
--- Brave baru dibuka
 drAppWatcher = hs.application.watcher.new(function(name, event)
     if name == BRAVE_NAME and event == hs.application.watcher.launched then
-        hs.timer.doAfter(8, function() applyDarkReader(true) end)
+        hs.timer.doAfter(5, function() applyDarkReader(true) end)
     end
 end)
 drAppWatcher:start()
 
--- Saat Hammerspoon start / reload
-hs.timer.doAfter(5, function() applyDarkReader(true) end)
+hs.timer.doAfter(3, function() applyDarkReader(true) end)
